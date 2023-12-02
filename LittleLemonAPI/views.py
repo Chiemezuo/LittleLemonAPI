@@ -1,15 +1,17 @@
-from rest_framework import generics
+from rest_framework import generics, status
+from rest_framework.response import Response
+from rest_framework.throttling import UserRateThrottle
+from rest_framework.pagination import PageNumberPagination
 from django.contrib.auth.models import User
 from rest_framework.permissions import IsAuthenticated
-from .models import MenuItem, Cart, Category, Order, OrderItem
+from .models import MenuItem, Cart, Order, OrderItem
 from .serializers import ( 
   UserSerializer, 
   DeleteUserSerializer, 
   MenuItemSerializer, 
   CartSerializer, 
-  CategorySerializer, 
   OrderItemSerializer, 
-  OrderSerializer
+  OrderSerializer,
 )
 from .permissions import IsDeliveryCrew, IsManager
 
@@ -17,6 +19,11 @@ from .permissions import IsDeliveryCrew, IsManager
 class MenuItemsView(generics.ListCreateAPIView):
   queryset = MenuItem.objects.all()
   serializer_class = MenuItemSerializer
+  throttle_classes = [UserRateThrottle]
+  pagination_class = PageNumberPagination
+  pagination_class.page_size = 5
+  search_fields = ['title']
+  ordering_fields = ['price']
   
   def get_permissions(self):
     permission_class = []
@@ -29,6 +36,7 @@ class MenuItemsView(generics.ListCreateAPIView):
 class SingleMenuItemView(generics.RetrieveUpdateDestroyAPIView):
   queryset = MenuItem.objects.all()
   serializer_class = MenuItemSerializer
+  throttle_classes = [UserRateThrottle]
   
   def get_permissions(self):
     permission_class = []
@@ -59,6 +67,7 @@ class DeleteDeliveryCrewMemberView(generics.DestroyAPIView):
 class CartView(generics.ListCreateAPIView, generics.DestroyAPIView):
   serializer_class = CartSerializer
   permission_classes = [IsAuthenticated]
+  throttle_classes = [UserRateThrottle]
   
   def get_queryset(self):
     cart = Cart.objects.filter(user=self.request.user)
@@ -67,6 +76,8 @@ class CartView(generics.ListCreateAPIView, generics.DestroyAPIView):
 class OrderView(generics.ListCreateAPIView):
   permission_classes = [IsAuthenticated]
   serializer_class = OrderSerializer
+  throttle_classes = [UserRateThrottle]
+  search_fields = ['menu_item']
   
   def perform_create(self, serializer):
     cart_items = self.get_cart_items()
@@ -90,8 +101,7 @@ class OrderView(generics.ListCreateAPIView):
         unit_price=item.unit_price,
         price=item.price,
         order=order
-      )
-      for item in cart_items
+      ) for item in cart_items
     ]
     OrderItem.objects.bulk_create(order_items)
   
@@ -113,16 +123,46 @@ class OrderView(generics.ListCreateAPIView):
 
 class OrderItemView(generics.RetrieveUpdateDestroyAPIView):
   serializer_class = OrderItemSerializer
+  permission_classes = [IsAuthenticated]
   
   def get_queryset(self):
     user = self.request.user
     if user.groups.filter(name='Managers').exists():
-      return Order.objects.all()
-    return Order.objects.filter(user=user)
+      return OrderItem.objects.filter(id=self.kwargs['pk'])
+    else:
+      return OrderItem.objects.filter(order__user=user, id=self.kwargs['pk'])
   
   def get_permissions(self):
     # if method is delete & permission is Manager
     # if method is patch & permission is Delivery crew
     # if method is put or patch & permission is Customer...
     # if method is get & permission is Customer
+    if self.request.method == 'DELETE':
+      return [IsManager()]
     return super().get_permissions()
+  
+  def partial_update(self, request, *args, **kwargs):
+    instance = self.get_object()
+    user = self.request.user
+    
+    if user.groups.filter(name='Delivery crew').exists():
+      if 'status' in request.data.keys():
+        instance.status = request.data['status']
+        instance.save(update_fields=['status'])
+        serializer = self.get_serializer(instance)
+        return Response(serializer.data)
+      
+    if user.groups.filter(name='Managers').exists():
+      if 'status' in request.data.keys():
+        instance.status = request.data['status']
+      if 'delivery_crew' in request.data.keys():
+        instance.delivery_crew = request.data['delivery_crew']
+        
+      instance.save(update_fields=['status','delivery_crew'])
+      serializer = self.get_serializer(instance)
+      return Response(serializer.data)
+    
+    return Response(
+      {"message": "You are not authorized to perform this action."},
+      status=status.HTTP_403_FORBIDDEN
+    )

@@ -1,0 +1,12 @@
+Manager:
+  username: admin
+  password: blahblahblah
+
+Delivery crew:
+  username: chiemezuo
+  password: blahblahblah
+
+Customer:
+  token: 10dae7d70c2649b23eb855ef08984b3e62536a7f
+  username: mezuo
+  password: blahblahblah
